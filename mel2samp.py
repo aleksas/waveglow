@@ -63,8 +63,9 @@ class Mel2Samp(torch.utils.data.Dataset):
     spectrogram, audio pair.
     """
     def __init__(self, training_files, segment_length, filter_length,
-                 hop_length, win_length, sampling_rate, mel_fmin, mel_fmax):
+                 hop_length, win_length, sampling_rate, mel_fmin, mel_fmax, load_mel_from_disk):
         self.audio_files = files_to_list(training_files)
+        self.load_mel_from_disk = load_mel_from_disk
         random.seed(1234)
         random.shuffle(self.audio_files)
         self.stft = TacotronSTFT(filter_length=filter_length,
@@ -75,12 +76,54 @@ class Mel2Samp(torch.utils.data.Dataset):
         self.segment_length = segment_length
         self.sampling_rate = sampling_rate
 
-    def get_mel(self, audio):
-        audio_norm = audio / MAX_WAV_VALUE
-        audio_norm = audio_norm.unsqueeze(0)
-        audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-        melspec = self.stft.mel_spectrogram(audio_norm)
-        melspec = torch.squeeze(melspec, 0)
+    def get_mel(self, filename):        
+        import os
+        import numpy as np
+        npy_filename = filename + '.npy'
+            
+        if not self.load_mel_from_disk or not os.path.exists(npy_filename):
+            audio, sr = load_wav_to_torch(filename)
+            
+            audio_norm = audio / MAX_WAV_VALUE
+            audio_norm = audio_norm.unsqueeze(0)
+            audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
+            melspec = self.stft.mel_spectrogram(audio_norm)
+            melspec = torch.squeeze(melspec, 0)
+        else:
+            if not filename.endswith('.npy'):
+                filename = npy_filename
+            melspec = torch.from_numpy(np.load(filename))
+            assert melspec.size(0) == self.stft.n_mel_channels, (
+                'Mel dimension mismatch: given {}, expected {}'.format(
+                    melspec.size(0), self.stft.n_mel_channels))
+            
+        return melspec
+    
+    
+    def get_mel2(self, filename):
+        import os
+        npy_filename = filename + '.npy'
+            
+        if not self.load_mel_from_disk:
+            audio, sampling_rate = load_wav_to_torch(filename)
+            if sampling_rate != self.stft.sampling_rate:
+                raise ValueError("{} {} SR doesn't match target {} SR".format(
+                    sampling_rate, self.stft.sampling_rate))
+            audio_norm = audio / self.max_wav_value
+            audio_norm = audio_norm.unsqueeze(0)
+            audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
+            melspec = self.stft.mel_spectrogram(audio_norm)
+            melspec = torch.squeeze(melspec, 0)
+            if not os.path.exists(npy_filename):
+                np.save(npy_filename, torch.Tensor.numpy(melspec))
+        else:
+            if not filename.endswith('.npy'):
+                filename = npy_filename
+            melspec = torch.from_numpy(np.load(filename))
+            assert melspec.size(0) == self.stft.n_mel_channels, (
+                'Mel dimension mismatch: given {}, expected {}'.format(
+                    melspec.size(0), self.stft.n_mel_channels))
+
         return melspec
 
     def __getitem__(self, index):
@@ -134,8 +177,7 @@ if __name__ == "__main__":
         os.chmod(args.output_dir, 0o775)
 
     for filepath in filepaths:
-        audio, sr = load_wav_to_torch(filepath)
-        melspectrogram = mel2samp.get_mel(audio)
+        melspectrogram = mel2samp.get_mel(filepath)
         filename = os.path.basename(filepath)
         new_filepath = args.output_dir + '/' + filename + '.pt'
         print(new_filepath)
